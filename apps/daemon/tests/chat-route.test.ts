@@ -2943,6 +2943,71 @@ process.exit(0);
     );
   });
 
+  it('compacts oversized Antigravity history before spawning while retaining the latest request and newest prior turn', async () => {
+    const argsPath = join(tmpdir(), `od-agy-argv-${randomUUID()}.json`);
+    const previousArgsPath = process.env.OD_TEST_AGY_ARGS_PATH;
+    process.env.OD_TEST_AGY_ARGS_PATH = argsPath;
+    try {
+      await withFakeAgent(
+        'agy',
+        `
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('1.107.0-test');
+  process.exit(0);
+}
+fs.writeFileSync(process.env.OD_TEST_AGY_ARGS_PATH, JSON.stringify(args));
+process.stdout.write(JSON.stringify({ type: 'init', session_id: 'agy-1', model: 'gemini-3.5-flash' }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: 'compacted response', delta: true }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'result', status: 'success', stats: { input_tokens: 4, output_tokens: 5, cached: 0, duration_ms: 25 } }) + '\\n');
+`,
+        async () => {
+          const currentPrompt = 'LATEST_ANTIGRAVITY_REQUEST';
+          const newestPriorTurn = 'NEWEST_ANTIGRAVITY_CONTEXT';
+          const omittedHistory = `OLDEST_ANTIGRAVITY_CONTEXT_${'x'.repeat(125_000)}`;
+          const priorTranscript = [
+            `## user\n${omittedHistory}`,
+            `## assistant\n${newestPriorTurn}`,
+          ].join('\n\n');
+          const createResponse = await fetch(`${baseUrl}/api/runs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agentId: 'antigravity',
+              message: `${priorTranscript}\n\n## user\n${currentPrompt}`,
+              currentPrompt,
+              priorTranscript,
+            }),
+          });
+          expect(createResponse.status).toBe(202);
+          const { runId } = await createResponse.json() as { runId: string };
+
+          const eventsController = new AbortController();
+          const eventsResponse = await fetch(`${baseUrl}/api/runs/${runId}/events`, {
+            signal: eventsController.signal,
+          });
+          const eventsBody = await readSseUntil(eventsResponse, 'event: final');
+          eventsController.abort();
+          const statusBody = await waitForRunStatus(baseUrl, runId);
+
+          expect(statusBody.status, eventsBody).toBe('succeeded');
+          if (process.platform !== 'win32') {
+            const args = JSON.parse(readFileSync(argsPath, 'utf8')) as string[];
+            const prompt = args[args.indexOf('-p') + 1] ?? '';
+            expect(prompt).toContain(currentPrompt);
+            expect(prompt).toContain(newestPriorTurn);
+            expect(prompt).not.toContain('OLDEST_ANTIGRAVITY_CONTEXT_');
+          }
+        },
+      );
+    } finally {
+      if (previousArgsPath === undefined) delete process.env.OD_TEST_AGY_ARGS_PATH;
+      else process.env.OD_TEST_AGY_ARGS_PATH = previousArgsPath;
+      rmSync(argsPath, { force: true });
+    }
+  });
+
   it('forwards Antigravity plain stdout JSONL when it lacks the Gemini init marker', async () => {
     await withFakeAgent(
       'agy',

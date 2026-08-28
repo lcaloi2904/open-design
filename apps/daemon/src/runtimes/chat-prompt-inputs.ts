@@ -112,6 +112,38 @@ export function resolveOdNextRequestUserPrompt({
   return typeof message === 'string' ? message : '';
 }
 
+
+/**
+ * Keep the newest complete agent-scoped turns that a transport-specific
+ * payload builder can fit. The web client frames genuine turns with these
+ * headings and escapes user-authored heading-like lines before transmission.
+ */
+export function compactPriorTranscriptForAgentTransport({
+  priorTranscript,
+  fits,
+}: {
+  priorTranscript: unknown;
+  fits: (priorTranscript: string) => boolean;
+}): string | null {
+  if (typeof priorTranscript !== 'string') return null;
+  const turns = priorTranscript
+    .split(/\n\n(?=## (?:user|assistant)\n)/)
+    .filter((turn) => /^## (?:user|assistant)\n/.test(turn));
+  if (turns.length === 0 || !fits('')) return null;
+
+  const notice =
+    '## context notice\nOpenDesign omitted older conversation turns to fit this agent transport.';
+  const selected: string[] = [];
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (!turn) continue;
+    const candidate = [turn, ...selected].join('\n\n');
+    if (!fits(`${notice}\n\n${candidate}`)) break;
+    selected.unshift(turn);
+  }
+  return selected.length > 0 ? `${notice}\n\n${selected.join('\n\n')}` : '';
+}
+
 export function composeChatAgentTextPayload({
   formOverride,
   daemonSystemPrompt,

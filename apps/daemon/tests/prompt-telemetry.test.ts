@@ -5,10 +5,11 @@ import { describe, expect, it } from 'vitest';
 import {
   PROMPT_STACK_REDACTION_VERSION,
   PROMPT_STACK_PATH_MARKER,
-  buildPromptStackFlatMetadata,
-  buildSafeChildPromptTelemetry,
-  buildPromptStackTelemetry,
+  assertOdNextExactSendPromptEvidence,
   bindOdNextExactSendPromptEvidence,
+  buildPromptStackFlatMetadata,
+  buildPromptStackTelemetry,
+  buildSafeChildPromptTelemetry,
   promptStackWithoutContent,
   redactLocalPaths,
 } from '../src/prompt-telemetry.js';
@@ -74,6 +75,39 @@ describe('prompt telemetry builder', () => {
       },
       stage: 'contract_repair',
     })).toThrow(/does not match its persisted SHA-256/u);
+  });
+
+  it('records an audited Antigravity argv compaction without altering the canonical bundle identity', () => {
+    const canonicalText = '<open_design_prompt_bundle>canonical</open_design_prompt_bundle>';
+    const compactText = '# Instructions\n\ncompact transport request';
+    const persisted = {
+      kind: 'bundle' as const,
+      schema: 'open-design.od-next-prompt-bundle/v2' as const,
+      text: canonicalText,
+      utf8Bytes: Buffer.byteLength(canonicalText, 'utf8'),
+      sha256: createHash('sha256').update(canonicalText, 'utf8').digest('hex'),
+    };
+    const telemetry = bindOdNextExactSendPromptEvidence({
+      telemetry: buildPromptStackTelemetry({
+        composedPrompt: compactText,
+        sections: [{ kind: 'odNextExactFinalText', content: compactText }],
+      }),
+      finalText: compactText,
+      persisted,
+      stage: 'request',
+      transportOverride: 'antigravity_argv_compaction',
+    });
+
+    expect(telemetry.odNextExactSend?.transportOverride).toEqual({
+      kind: 'antigravity_argv_compaction',
+      canonicalSha256: persisted.sha256,
+      canonicalUtf8Bytes: persisted.utf8Bytes,
+    });
+    expect(() => assertOdNextExactSendPromptEvidence({
+      telemetry,
+      persisted,
+      stage: 'request',
+    })).not.toThrow();
   });
 
   it('builds bounded child-injected Prompt telemetry with the shared secret and path redaction', () => {
