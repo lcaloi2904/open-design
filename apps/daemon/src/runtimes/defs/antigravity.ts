@@ -1,13 +1,3 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import { readFile as fsReadFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 import { agentCapabilities } from '../capabilities.js';
 import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
@@ -15,28 +5,22 @@ import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
 const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
 // `agy` v1.0.3 had no `--model` flag (upstream issue #35). As of 1.1.22
-// (verified 2026-08-28) `--model` and a programmatic `agy models`
-// subcommand both exist, but this def still routes model selection
-// through the TUI's settings.json mechanism rather than `--model`
-// directly: the Switch-Model picker writes the choice to settings.json,
-// and every `agy -p` invocation re-reads that file on startup —
-// verified by capturing the `--log-file` line `Propagating selected
-// model override to backend: label="<model>"`. So we can route OD's
-// model picker through settings.json: when the user picks a concrete
-// model in Settings, the daemon writes the label into agy's
-// settings.json right before spawn, and the resulting print-mode run
-// uses that model. Migrating `buildArgs` to pass `--model <slug>`
-// directly (dropping the settings.json write, the lock chain below, and
-// the log-file poll) is a follow-up, not done here.
+// (verified 2026-08-28, logged in) `--model` accepts either the slug or
+// the display label and emits `Propagating selected model override to
+// backend: label="<X>"` on every tier (Gemini/Claude/GPT-OSS) — the same
+// label OD already used with the settings.json write path. `buildArgs`
+// passes `--model <label>` directly in argv, so there is no shared
+// mutable state between concurrent spawns and no need for a lock or a
+// log-file poll.
 //
 // Two ids the picker exposes are special:
-//   - 'default'         : leave settings.json untouched, so agy keeps
+//   - 'default'         : omit `--model` entirely, so agy keeps
 //                         whatever the user last picked in its own TUI.
 //                         (Respects user choice when they switch models
 //                         from `agy` directly.)
 //   - any other id      : the literal display label agy expects (e.g.
 //                         "Gemini 3.1 Pro (High)", "Claude Sonnet 4.6
-//                         (Thinking)"). We persist it before spawn.
+//                         (Thinking)"). Passed verbatim as the flag value.
 //
 // `supportsCustomModel: false` because the label set is a server-side
 // enum — a typed id agy doesn't recognise resolves to a silent
@@ -46,140 +30,13 @@ const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 // These labels mirror `agy models` (confirmed 2026-08-28, agy 1.1.22),
 // in the same order that command lists them, and double as the offline/
 // failure fallback for the live `listModels` fetch below.
-const ANTIGRAVITY_SETTINGS_PATH = join(
-  homedir(),
-  '.gemini',
-  'antigravity-cli',
-  'settings.json',
-);
-
-export function writeAntigravityModelSelection(
-  label: string,
-  settingsPath: string = ANTIGRAVITY_SETTINGS_PATH,
-): void {
-  let existing: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        existing = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Corrupt JSON — fall through and rewrite the file from scratch so
-      // the next spawn starts from a known-good state.
-    }
-  }
-  existing.model = label;
-  mkdirSync(dirname(settingsPath), { recursive: true });
-  writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`);
-}
-
-// Per-process serialization for write-settings → spawn → agy-reads
-// cycles on antigravity. `~/.gemini/antigravity-cli/settings.json` is
-// process-global, so two OD runs that both pick concrete (non-default)
-// models can race: run A writes model A, spawn A starts, run B writes
-// model B before A's agy has read settings.json — A then executes on
-// model B. The daemon serialises non-default antigravity spawns
-// through this chain: each acquire awaits the previous release, and
-// each release fires only after the spawned agy actually emits
-// `Propagating selected model override to backend: label="<X>"` in
-// its `--log-file` (which is the upstream signal that settings.json
-// has been read).
-let antigravityLockChain: Promise<void> = Promise.resolve();
-
-export async function acquireAntigravityModelLock(): Promise<() => void> {
-  const previous = antigravityLockChain;
-  let release: () => void = () => {};
-  antigravityLockChain = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  return release;
-}
-
-// Visible for tests. Resets the module-level lock chain so a test that
-// installed a hanging acquirer can release it without leaking state to
-// subsequent test cases. Production code never calls this.
-export function _resetAntigravityModelLockForTests(): void {
-  antigravityLockChain = Promise.resolve();
-}
-
-export interface WaitForAgyModelOptions {
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-  // Override for tests; production reads the daemon-owned log file path.
-  readFile?: (path: string) => Promise<string>;
-  // Override `Date.now` for tests; production uses the wall clock.
-  now?: () => number;
-  // Stops polling when fired. Production wires this to `child.once('exit')`
-  // so the watcher cancels as soon as agy exits — the lock release is
-  // then driven by the exit handler rather than the helper's return
-  // value, eliminating the slow-startup race the looper review at
-  // 263fd2fe7 flagged: if a cold agy takes >timeoutMs to read its
-  // settings.json, we'd otherwise return false, the caller would
-  // release the lock, and a concurrent run B could rewrite
-  // settings.json before A's agy actually read it.
-  abortSignal?: AbortSignal;
-}
-
-// Polls agy's `--log-file` for the line
-//   `Propagating selected model override to backend: label="<expectedModel>"`
-// which `model_config_manager.go` emits once agy has finished reading
-// `~/.gemini/antigravity-cli/settings.json` and sent the model
-// override to the upstream backend. Returns true on observed signal,
-// false on timeout OR abort. Never throws — a missing log file is
-// treated as "not yet seen" so the polling loop keeps retrying until
-// either the deadline or the abort signal fires.
-//
-// IMPORTANT: callers MUST NOT use a `false` return as a "go ahead and
-// release the settings.json lock" signal — false means "I gave up
-// polling," not "agy definitely didn't read this." Release the lock
-// only on (a) a `true` return, OR (b) child exit. See server.ts for
-// the wiring.
-export async function waitForAgyToReadModel(
-  logFilePath: string,
-  expectedModel: string,
-  options: WaitForAgyModelOptions = {},
-): Promise<boolean> {
-  const timeoutMs = options.timeoutMs ?? 15_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 250;
-  const readFile =
-    options.readFile ?? ((path: string) => fsReadFile(path, 'utf8'));
-  const now = options.now ?? Date.now;
-  const abortSignal = options.abortSignal;
-  if (abortSignal?.aborted) return false;
-  const escaped = expectedModel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(
-    `Propagating selected model override to backend: label="${escaped}"`,
-  );
-  const deadline = now() + timeoutMs;
-  while (now() < deadline) {
-    if (abortSignal?.aborted) return false;
-    try {
-      const content = await readFile(logFilePath);
-      if (pattern.test(content)) return true;
-    } catch {
-      // Log file may not have appeared yet; keep polling.
-    }
-    if (now() >= deadline) break;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, pollIntervalMs);
-      const onAbort = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      abortSignal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
-  return false;
-}
 
 // `agy models` prints a `Fetching available models...` prose line followed
 // by tab-separated `<slug>\t<display label>` rows (verified 2026-08-28, agy
 // 1.1.22, logged in). Emit `{ id: label, label }` — discarding the slug
 // column — because `mergeFallbackModelMetadata` merges live entries with
 // `fallbackModels` by `id`, and `fallbackModels[].id` is the display label
-// that `buildArgs`/`writeAntigravityModelSelection` expect.
+// that `buildArgs` passes as the `--model` flag value.
 export function parseAntigravityModels(stdout: string): RuntimeModelOption[] {
   const seen = new Set<string>();
   const out: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
@@ -251,18 +108,9 @@ export const antigravityAgentDef = {
     options = {},
     runtimeContext = {},
   ) => {
-    if (options.model && options.model !== DEFAULT_MODEL_OPTION.id) {
-      writeAntigravityModelSelection(
-        options.model,
-        runtimeContext.antigravitySettingsPath,
-      );
-    }
-    // Print mode via `-p <prompt>`. Older OD used `agy -p -` and wrote the
-    // prompt on stdin, but current agy (reproduced on 1.1.13) treats `-`
-    // as the literal prompt string and ignores stdin — the model only
-    // ever sees a single dash (#7161). Passing the real prompt as the
-    // `-p` argument matches the verified working CLI form
-    // (`agy -p "say hello"`).
+    // Print mode passes the composed prompt as `-p <prompt>`. Current agy
+    // treats `-p -` as a literal prompt and does not read stdin (#7161),
+    // so the prompt must remain in argv.
     const args: string[] = [];
     // Always opt into `--log-file` when the daemon supplied a path so
     // it can post-exit grep for the actual upstream failure shape
@@ -275,6 +123,12 @@ export const antigravityAgentDef = {
     // so diagnostics (model override / auth / quota) land in the log.
     if (runtimeContext.agentLogFilePath) {
       args.push('--log-file', runtimeContext.agentLogFilePath);
+    }
+    // 'default' leaves the flag off entirely so agy keeps whatever model
+    // its own TUI last selected; any other id is the literal display
+    // label agy's `--model` flag expects.
+    if (options.model && options.model !== DEFAULT_MODEL_OPTION.id) {
+      args.push('--model', options.model);
     }
     // Daemon-managed print-mode runs have no interactive approval channel.
     if (agentCapabilities.get('antigravity')?.skipPermissions) {
