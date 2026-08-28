@@ -688,17 +688,20 @@ describe('isLocalSameOrigin: OD_ALLOWED_ORIGINS bypass for reverse-proxy deploym
     expect(isLocalSameOrigin(reqExternal, 7457, env)).toBe(false);
   });
 
-  it('does not accept a partial match (origin must be exact)', () => {
+  it('accepts a wildcard Orca origin', () => {
+    const env = {
+      ...process.env,
+      OD_ALLOWED_ORIGINS: 'http://*.orca.localhost',
+    };
     const req = {
       headers: {
         host: '172.18.0.5:7457',
-        // Same hostname/port but trailing slash → not an exact match for the
-        // allow-list entry, which the URL parser canonicalizes without one.
-        origin: `${ALLOWED}/`,
+        origin: 'http://open-design-7.orca.localhost:54928',
       },
     };
-    expect(isLocalSameOrigin(req, 7457, env)).toBe(false);
+    expect(isLocalSameOrigin(req, 7457, env)).toBe(true);
   });
+
 });
 
 // Firefox and Chrome omit the Origin header on same-origin GET requests per
