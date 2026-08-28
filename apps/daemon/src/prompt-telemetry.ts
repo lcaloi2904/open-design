@@ -79,6 +79,11 @@ export interface OdNextExactSendPromptEvidenceV1 {
   stage: StrategyInputStageV2;
   sha256: string;
   utf8Bytes: number;
+  transportOverride?: {
+    kind: 'antigravity_argv_compaction';
+    canonicalSha256: string;
+    canonicalUtf8Bytes: number;
+  };
 }
 
 export class InvalidOdNextExactSendPromptError extends Error {
@@ -473,14 +478,19 @@ export function bindOdNextExactSendPromptEvidence(input: {
   persisted: StrategyTaskFinalTextIdentity;
   stage: StrategyInputStageV2;
   purpose?: 'intent_resolution' | undefined;
+  transportOverride?: 'antigravity_argv_compaction';
 }): PromptStackTelemetry {
   const utf8Bytes = byteLength(input.finalText);
   const sha256Hex = createHash('sha256').update(input.finalText, 'utf8').digest('hex');
+  const canonicalSha256 = createHash('sha256')
+    .update(input.persisted.text, 'utf8')
+    .digest('hex');
+  const isOverride = input.transportOverride !== undefined;
   if (
-    input.telemetry.rawBytes !== utf8Bytes ||
-    input.persisted.text !== input.finalText ||
-    input.persisted.utf8Bytes !== utf8Bytes ||
-    input.persisted.sha256 !== sha256Hex
+    input.telemetry.rawBytes !== utf8Bytes
+    || (!isOverride && input.persisted.text !== input.finalText)
+    || input.persisted.utf8Bytes !== byteLength(input.persisted.text)
+    || input.persisted.sha256 !== canonicalSha256
   ) {
     throw new InvalidOdNextExactSendPromptError(
       'OD Next exact-send Prompt does not match its persisted SHA-256 and UTF-8 byte identity.',
@@ -513,6 +523,15 @@ export function bindOdNextExactSendPromptEvidence(input: {
       stage: input.stage,
       sha256: sha256Hex,
       utf8Bytes,
+      ...(isOverride
+        ? {
+            transportOverride: {
+              kind: input.transportOverride!,
+              canonicalSha256,
+              canonicalUtf8Bytes: input.persisted.utf8Bytes,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -528,6 +547,22 @@ export function assertOdNextExactSendPromptEvidence(input: {
   stage: StrategyInputStageV2;
   purpose?: 'intent_resolution' | undefined;
 }): void {
+  const override = input.telemetry.odNextExactSend?.transportOverride;
+  if (override) {
+    const canonicalSha256 = createHash('sha256')
+      .update(input.persisted.text, 'utf8')
+      .digest('hex');
+    if (
+      input.telemetry.rawBytes !== input.telemetry.odNextExactSend?.utf8Bytes
+      || override.canonicalSha256 !== canonicalSha256
+      || override.canonicalUtf8Bytes !== input.persisted.utf8Bytes
+    ) {
+      throw new InvalidOdNextExactSendPromptError(
+        'OD Next transport-compaction evidence no longer matches its immutable final text identity.',
+      );
+    }
+    return;
+  }
   const expected = bindOdNextExactSendPromptEvidence({
     telemetry: buildPromptStackTelemetry({
       composedPrompt: input.persisted.text,
@@ -540,7 +575,7 @@ export function assertOdNextExactSendPromptEvidence(input: {
   });
   if (!isDeepStrictEqual(input.telemetry, expected)) {
     throw new InvalidOdNextExactSendPromptError(
-      'Persisted OD Next exact-send Prompt evidence no longer matches its authoritative task mapping.',
+      'OD Next exact-send Prompt evidence does not match its persisted final text identity.',
     );
   }
 }

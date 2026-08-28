@@ -652,7 +652,8 @@ test('qwen args check promptViaStdin, base args, model args and exclude `-` sent
 // `agy` exposes `-p` (print mode, alias for `--print`) and treats the
 // following value as the prompt. Current agy treats `agy -p -` as a
 // literal prompt (stdin is ignored) — see #7161. OD therefore passes
-// the real prompt as the `-p` argument.
+// the real prompt as the `-p` argument and declares an argv budget for
+// oversized Windows runs.
 test('antigravity passes prompt via -p argument (print mode)', () => {
   assert.equal(antigravity.bin, 'agy');
   assert.equal(antigravity.streamFormat, 'plain');
@@ -721,7 +722,7 @@ test('antigravity passes prompt via -p argument (print mode)', () => {
   assert.deepEqual(firstTurn, ['-p', 'first']);
   assert.equal(antigravity.resumesSessionViaCli, undefined);
 
-  assert.equal(antigravity.maxPromptArgBytes, undefined);
+  assert.equal(antigravity.maxPromptArgBytes, 30_000);
 
   // Picker exposes the synthetic Default + the labels `agy models`
   // reports for consumer-tier accounts (confirmed 2026-08-28, agy
