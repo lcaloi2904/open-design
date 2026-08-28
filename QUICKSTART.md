@@ -346,6 +346,10 @@ open-design/
 - **Codex loads too much plugin context** — start OpenDesign with `OD_CODEX_DISABLE_PLUGINS=1 pnpm tools-dev` to make daemon-spawned Codex processes run with `--disable plugins`.
 - **artifact never renders** — first identify the run's handoff profile. For a filesystem-capable local runtime, confirm the agent created a previewable project file and that file-write events reached the daemon; it should not emit source in `<artifact>`. For a plain/text-only or BYOK run, confirm the response contains one complete `<artifact>` block. Check daemon logs for the first failed boundary instead of asking a filesystem runtime to fall back to inline source.
 - **`Authorization: Bearer <OD_API_TOKEN>` required on macOS** — Docker Desktop bridge networking makes the daemon see requests as non-loopback. Enable host networking in Docker Desktop and use `network_mode: host`. See [`deploy/README.md` — Docker Desktop on macOS](deploy/README.md#docker-desktop-on-macos).
+- **AMR "Sign in" fails with `vela binary not found; install vela or configure VELA_BIN`** — expected in dev mode. The private `vela` CLI (`@powerformer/vela-cli`) is bundled into the app only by packaged builds (`tools/pack`); `pnpm tools-dev` never sets `OD_RESOURCE_ROOT`, so the daemon falls back to PATH and finds nothing. If `pnpm install` already pulled the optional per-platform package for your OS/arch, point `VELA_BIN` at it in `.env.local` (loaded automatically by `tools-dev`, see [`tools/dev/src/local-env.ts`](tools/dev/src/local-env.ts)) and restart `pnpm tools-dev`:
+  ```
+  VELA_BIN=<repo>/node_modules/.pnpm/@powerformer+vela-cli-<platform>-<arch>@<version>/node_modules/@powerformer/vela-cli-<platform>-<arch>/bin/vela<.exe on Windows>
+  ```
 
 ## Mapping back to the vision
 
