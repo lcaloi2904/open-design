@@ -3,8 +3,12 @@ import { test } from 'vitest';
 import {
   AGENT_DEFS, aider, antigravity, assert, claude, codex, copilot, cursorAgent, deepseek, devin, detectAgents, grokBuild, join, kilo, kimi, kiro, mkdtempSync, opencode, pi, qoder, qwen, rmSync, spawnEnvForAgent, tmpdir, vibe, writeFileSync, chmodSync,
 } from './helpers/test-helpers.js';
-import { writeAntigravityModelSelection } from '../../src/runtimes/defs/antigravity.js';
+import {
+  parseAntigravityModels,
+  writeAntigravityModelSelection,
+} from '../../src/runtimes/defs/antigravity.js';
 import { parseOpenCodeModels } from '../../src/runtimes/defs/opencode.js';
+import { DEFAULT_MODEL_OPTION } from '../../src/runtimes/models.js';
 import { agentCapabilities } from '../../src/runtimes/capabilities.js';
 import {
   getRememberedLiveModels,
@@ -862,6 +866,72 @@ test('antigravity persists model selection to agy settings.json', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('antigravity parses live `agy models` output into label-keyed options, dropping the prose line', () => {
+  const stdout = [
+    'Fetching available models...',
+    'gemini-3.7-flash-high\tGemini 3.7 Flash (High)',
+    'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)',
+    'gemini-3.7-flash-low\tGemini 3.7 Flash (Low)',
+    'gemini-3.6-flash-high\tGemini 3.6 Flash (High)',
+    'gemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)',
+    'gemini-3.6-flash-low\tGemini 3.6 Flash (Low)',
+    'gemini-3.5-flash-high\tGemini 3.5 Flash (High)',
+    'gemini-3.5-flash-medium\tGemini 3.5 Flash (Medium)',
+    'gemini-3.5-flash-low\tGemini 3.5 Flash (Low)',
+    'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
+    'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)',
+    'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
+    'claude-opus-4-6\tClaude Opus 4.6 (Thinking)',
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+  ].join('\n');
+
+  const parsed = parseAntigravityModels(stdout);
+
+  assert.deepEqual(parsed.map((m) => m.id), [
+    'default',
+    'Gemini 3.7 Flash (High)',
+    'Gemini 3.7 Flash (Medium)',
+    'Gemini 3.7 Flash (Low)',
+    'Gemini 3.6 Flash (High)',
+    'Gemini 3.6 Flash (Medium)',
+    'Gemini 3.6 Flash (Low)',
+    'Gemini 3.5 Flash (High)',
+    'Gemini 3.5 Flash (Medium)',
+    'Gemini 3.5 Flash (Low)',
+    'Gemini 3.1 Pro (High)',
+    'Gemini 3.1 Pro (Low)',
+    'Claude Sonnet 4.6 (Thinking)',
+    'Claude Opus 4.6 (Thinking)',
+    'GPT-OSS 120B (Medium)',
+  ]);
+  assert.equal(parsed[0], DEFAULT_MODEL_OPTION);
+  assert.deepEqual(
+    parsed.find((m) => m.id === 'Claude Sonnet 4.6 (Thinking)'),
+    { id: 'Claude Sonnet 4.6 (Thinking)', label: 'Claude Sonnet 4.6 (Thinking)' },
+  );
+});
+
+test('antigravity dedupes repeated labels and skips lines without a tab-separated label column', () => {
+  const parsed = parseAntigravityModels([
+    'Fetching available models...',
+    'gemini-3.7-flash-high\tGemini 3.7 Flash (High)',
+    'gemini-3.7-flash-high-dup\tGemini 3.7 Flash (High)',
+    'no-tab-line-with-no-label',
+    '',
+  ].join('\n'));
+
+  assert.deepEqual(parsed, [
+    DEFAULT_MODEL_OPTION,
+    { id: 'Gemini 3.7 Flash (High)', label: 'Gemini 3.7 Flash (High)' },
+  ]);
+});
+
+test('antigravity declares live listModels wired to parseAntigravityModels', () => {
+  assert.deepEqual(antigravity.listModels?.args, ['models']);
+  assert.equal(antigravity.listModels?.timeoutMs, 10_000);
+  assert.equal(antigravity.listModels?.parse, parseAntigravityModels);
 });
 
 // AMR routes model selection through ACP `session/set_model` and only
