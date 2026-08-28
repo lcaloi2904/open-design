@@ -110,7 +110,8 @@ export const antigravityAgentDef = {
   ) => {
     // Print mode passes the composed prompt as `-p <prompt>`. Current agy
     // treats `-p -` as a literal prompt and does not read stdin (#7161),
-    // so the prompt must remain in argv.
+    // so the prompt must remain in argv. `maxPromptArgBytes` below keeps
+    // Windows CreateProcess from surfacing a generic ENAMETOOLONG.
     const args: string[] = [];
     // Always opt into `--log-file` when the daemon supplied a path so
     // it can post-exit grep for the actual upstream failure shape
@@ -137,6 +138,11 @@ export const antigravityAgentDef = {
     args.push('-p', prompt);
     return args;
   },
+  // `agy` currently accepts the composed prompt only as an argv value.
+  // Keep enough headroom below Windows' ~32 KB CreateProcess limit for
+  // `-p`, model/log flags, and command-line quoting; POSIX uses the larger
+  // platform-aware limit in prompt-budget.ts.
+  maxPromptArgBytes: 30_000,
   promptViaStdin: false,
   streamFormat: 'plain',
   installUrl: 'https://antigravity.google/cli',

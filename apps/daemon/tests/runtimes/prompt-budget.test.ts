@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import {
-  assert, checkPromptArgvBudget, checkWindowsCmdShimCommandLineBudget, checkWindowsDirectExeCommandLineBudget, claude, deepseek, deepseekMaxPromptArgBytes, grokBuild, kimi, vibe,
+  assert, antigravity, checkPromptArgvBudget, checkWindowsCmdShimCommandLineBudget, checkWindowsDirectExeCommandLineBudget, claude, deepseek, deepseekMaxPromptArgBytes, grokBuild, kimi, vibe,
 } from './helpers/test-helpers.js';
 import type { TestAgentDef } from './helpers/test-helpers.js';
 
@@ -54,6 +54,71 @@ test('deepseek declares a conservative argv-byte budget for the prompt', () => {
     deepseekMaxPromptArgBytes > 0 && deepseekMaxPromptArgBytes < 32_768,
     `deepseekMaxPromptArgBytes must stay strictly under the Windows CreateProcess limit (~32 KB); got ${deepseekMaxPromptArgBytes}`,
   );
+});
+
+// Antigravity's current print-mode contract carries the composed prompt as
+// the `-p` argv value. On Windows, reject an oversized prompt before
+// `child_process.spawn` can surface the generic ENAMETOOLONG error. POSIX
+// keeps the larger platform-aware budget, matching the shared guard.
+test('checkPromptArgvBudget protects Antigravity from oversized Windows argv', () => {
+  assert.equal(antigravity.maxPromptArgBytes, 30_000);
+
+  const oversized = 'x'.repeat(30_001);
+  const flagged = checkPromptArgvBudget(antigravity, oversized, 'win32');
+  assert.ok(flagged, 'oversized Antigravity prompts must trip the argv-byte guard');
+  assert.equal(flagged.code, 'AGENT_PROMPT_TOO_LARGE');
+  assert.equal(flagged.limit, 30_000);
+  assert.equal(flagged.bytes, 30_001);
+  assert.match(flagged.message, /Antigravity/);
+  assert.match(flagged.message, /stdin support/);
+
+  assert.equal(checkPromptArgvBudget(antigravity, 'hello', 'win32'), null);
+  assert.equal(
+    checkPromptArgvBudget(antigravity, 'x'.repeat(30_000), 'win32'),
+    null,
+  );
+});
+
+// Antigravity also receives its composed prompt through argv (`agy -p`),
+// with optional model and daemon-owned log-file flags. The generic Windows
+// command-line guards only opt in when the adapter declares an argv budget,
+// so pin both resolution paths against a quote-heavy prompt that fits the
+// raw 30 KB limit but expands beyond CreateProcess after quoting.
+test('Antigravity quote-heavy prompts trip both Windows command-line guards before spawn', () => {
+  const quoteHeavyPrompt = '"'.repeat(29_900);
+  assert.equal(checkPromptArgvBudget(antigravity, quoteHeavyPrompt, 'win32'), null);
+
+  const args = antigravity.buildArgs(
+    quoteHeavyPrompt,
+    [],
+    [],
+    { model: 'Gemini 3.1 Pro (High)' },
+    { agentLogFilePath: 'C:\\Temp\\od-agy-test.log' },
+  );
+
+  const cmdShimError = checkWindowsCmdShimCommandLineBudget(
+    antigravity,
+    'C:\\Users\\Tester\\AppData\\Roaming\\npm\\agy.cmd',
+    args,
+  );
+  assert.ok(cmdShimError);
+  assert.equal(cmdShimError.code, 'AGENT_PROMPT_TOO_LARGE');
+  assert.match(cmdShimError.message, /Antigravity/);
+
+  const directExeError = checkWindowsDirectExeCommandLineBudget(
+    antigravity,
+    'C:\\Program Files\\Antigravity\\agy.exe',
+    args,
+  );
+  assert.ok(directExeError);
+  assert.equal(directExeError.code, 'AGENT_PROMPT_TOO_LARGE');
+  assert.match(directExeError.message, /Antigravity/);
+  // Bare/relative paths only reach CreateProcess when the daemon runs on
+  // Windows. POSIX hosts still cover the same quote math through the
+  // explicit Windows-shaped path above.
+  if (process.platform === 'win32') {
+    assert.ok(checkWindowsDirectExeCommandLineBudget(antigravity, 'agy.exe', args));
+  }
 });
 
 // Regression: composed prompts larger than the deepseek argv budget

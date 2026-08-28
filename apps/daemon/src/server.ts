@@ -55,6 +55,10 @@ import {
   resolveExclusiveSurface,
 } from './prompts/system.js';
 import {
+  PROMPT_INJECTION_RESISTANCE,
+  SLIM_V2_ROLE_BOUNDARY_GUARD,
+} from './prompts/core-slim.js';
+import {
   computeStableSectionHashes,
   serializeStableSections,
   type StableSectionHashes,
@@ -108,6 +112,7 @@ import {
 } from './browser/index.js';
 import {
   UPLOAD_DIR,
+  compactPriorTranscriptForAgentTransport,
   composeChatAgentTextPayload,
   composeLiveInstructionPrompt,
   formatDesignFilesWorkspaceHint,
@@ -11458,31 +11463,121 @@ export async function startServer({
           odNextTaskInputSnapshot?.requestInputText ?? '',
         ].filter(Boolean).join('\n\n---\n\n')
       : '';
-    const composedResult = strategyTaskAtStart
-      ? {
-          composedPrompt: persistedStrategyFinalText!,
-          clientInstructionPrompt: '',
-          instructionPrompt: '',
-        }
-      : composeChatAgentTextPayload({
-      formOverride: agentFormOverride,
-      daemonSystemPrompt: includeStableForPayload ? daemonSystemPrompt : '',
-      runtimeToolPrompt: includeStableForPayload ? runtimeToolPrompt : '',
+    const antigravityTransportCore = [
+      '# OpenDesign argv transport mode',
+      'Fulfill the current user request using the available runtime tools.',
+      'Do not relax safety, authorization, or file-boundary requirements.',
+      PROMPT_INJECTION_RESISTANCE,
+      SLIM_V2_ROLE_BOUNDARY_GUARD,
+    ].join('\n\n');
+    const composeLegacyPayload = (
+      requestOrStageText: string,
+      { compactForAntigravityArgv = false }: {
+        compactForAntigravityArgv?: boolean;
+      } = {},
+    ) => composeChatAgentTextPayload({
+      formOverride: compactForAntigravityArgv ? '' : agentFormOverride,
+      daemonSystemPrompt: compactForAntigravityArgv
+        ? antigravityTransportCore
+        : includeStableForPayload ? daemonSystemPrompt : '',
+      runtimeToolPrompt: compactForAntigravityArgv
+        ? 'Use the available OpenDesign runtime tools when they are needed to fulfill the current request.'
+        : includeStableForPayload ? runtimeToolPrompt : '',
       researchCommandContract,
       runContextPrompt,
       connectedExternalMcpReference: mcpConnectedDirective,
       browserUnavailableGuard: browserUsePromptGuard,
       titleGenerationDirective: titleGenerationPrompt,
-      clientSystemPrompt: includeStableForPayload ? systemPrompt : '',
+      clientSystemPrompt: compactForAntigravityArgv
+        ? ''
+        : includeStableForPayload ? systemPrompt : '',
       cwdReference: cwdHint,
       linkedDirectoryReferences: linkedDirsHint,
       echoGuard: agentEchoGuard,
-      requestOrStageText: userRequestPrompt,
+      requestOrStageText,
       projectAttachmentReferences: attachmentHint,
       commentAttachmentReferences: commentHint,
       imageReferences: promptImagePaths.map((p) => `@${p}`).join(' '),
-      strategyInputStage: strategyTaskAtStart?.inputStage ?? null,
-        });
+      strategyInputStage: compactForAntigravityArgv
+        ? null
+        : strategyTaskAtStart?.inputStage ?? null,
+    });
+    let composedResult = strategyTaskAtStart
+      ? {
+          composedPrompt: persistedStrategyFinalText!,
+          clientInstructionPrompt: '',
+          instructionPrompt: '',
+        }
+      : composeLegacyPayload(userRequestPrompt);
+    if (def.id === 'antigravity') {
+      // Match canonical OD Next composition: an explicitly malformed
+      // currentPrompt resolves to the empty request, never to the flattened
+      // message/transcript. Transport size must not change request semantics.
+      const currentPromptForTransport = typeof currentPrompt === 'string'
+        ? currentPrompt
+        : userRequestPrompt;
+      const fitsAntigravityArgvTransport = (candidate: string) => {
+        if (checkPromptArgvBudget(def, candidate)) return false;
+        const candidateArgs = def.buildArgs(
+          candidate,
+          promptImagePaths,
+          extraAllowedDirs,
+          agentOptions,
+          {
+            agentLogFilePath: path.join(os.tmpdir(), `od-agy-${run.id}.log`),
+          },
+        );
+        return checkWindowsCmdShimCommandLineBudget(
+          def,
+          agentLaunch.launchPath ?? resolvedBin,
+          candidateArgs,
+        ) === null && checkWindowsDirectExeCommandLineBudget(
+          def,
+          agentLaunch.launchPath ?? resolvedBin,
+          candidateArgs,
+        ) === null;
+      };
+      const shouldCompactForArgv = !fitsAntigravityArgvTransport(
+        composedResult.composedPrompt,
+      );
+      if (shouldCompactForArgv && typeof currentPromptForTransport === 'string') {
+        const compactRequestForPrior = (compactedPrior: string) => {
+          if (!compactedPrior) {
+            return composeChatUserRequestForAgent(
+              currentPromptForTransport,
+              currentPromptForTransport,
+              { skipTranscript: true },
+            );
+          }
+          return composeChatUserRequestForAgent(
+            `${compactedPrior}\n\n## user\n${currentPromptForTransport.trim()}`,
+            currentPromptForTransport,
+          );
+        };
+        const transportProfiles = isOdNextRequestStage ? [true] : [false, true];
+        for (const compactForAntigravityArgv of transportProfiles) {
+          const compactedPrior = compactPriorTranscriptForAgentTransport({
+            priorTranscript,
+            fits: (candidatePrior) => {
+              const compactedPayload = composeLegacyPayload(
+                compactRequestForPrior(candidatePrior),
+                { compactForAntigravityArgv },
+              );
+              return fitsAntigravityArgvTransport(compactedPayload.composedPrompt);
+            },
+          });
+          const requestForTransport = compactRequestForPrior(
+            compactedPrior ?? (
+              typeof priorTranscript === 'string' ? priorTranscript : ''
+            ),
+          );
+          composedResult = composeLegacyPayload(requestForTransport, {
+            compactForAntigravityArgv,
+          });
+          if (fitsAntigravityArgvTransport(composedResult.composedPrompt)) break;
+        }
+      }
+    }
     const {
       composedPrompt: composed,
       clientInstructionPrompt,
@@ -11518,9 +11613,6 @@ export async function startServer({
         ? [{ kind: 'odNextExactFinalText', content: composed }]
         : [
             { kind: 'formOverride', content: agentFormOverride },
-            // Phase 1 explicitly needs redactedContent for these aggregate prompts:
-            // they are the quickest way to inspect the system context sent to the
-            // model when diagnosing Langfuse traces.
             { kind: 'daemonSystemPrompt', content: daemonSystemPrompt },
             { kind: 'runtimeToolPrompt', content: runtimeToolPrompt },
             { kind: 'researchCommandContract', content: researchCommandContract },
@@ -11568,6 +11660,10 @@ export async function startServer({
             finalText: composed,
             persisted: strategyRunMapping.finalText,
             stage: strategyRunMapping.inputStage,
+            ...(def.id === 'antigravity'
+              && composed !== strategyRunMapping.finalText.text
+              ? { transportOverride: 'antigravity_argv_compaction' as const }
+              : {}),
           })
         : promptTelemetry;
     } catch (error) {
@@ -12367,12 +12463,12 @@ export async function startServer({
     }
 
     // Pre-flight the composed prompt against any argv-byte budget the
-    // adapter declared (only DeepSeek TUI today — its CLI doesn't accept
-    // a `-` stdin sentinel, so the prompt has to ride argv). Doing this
-    // before bin resolution means the test harness pins the guard
+    // adapter declared (currently Aider, DeepSeek TUI, and Antigravity —
+    // these CLIs require the prompt as an argv value). The check runs
+    // before buildArgs and spawn, so the test harness pins the guard
     // independently of whether the adapter binary happens to be on PATH
-    // in the CI environment, and the user gets the actionable
-    // adapter-named error even if /api/agents hadn't refreshed yet.
+    // in the CI environment, and the user gets an actionable
+    // adapter-named error even if /api/agents had not refreshed yet.
     const promptBudgetError = checkPromptArgvBudget(def, composed);
     if (promptBudgetError) {
       design.runs.emit(
