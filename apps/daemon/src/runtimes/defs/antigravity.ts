@@ -14,14 +14,20 @@ import type { RuntimeAgentDef } from '../types.js';
 
 const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
-// `agy` v1.0.3 still has no `--model` flag (upstream issue #35), but the
-// TUI's Switch-Model picker writes the choice to its settings.json, and
-// every `agy -p` invocation re-reads that file on startup — verified by
-// capturing the `--log-file` line `Propagating selected model override to
-// backend: label="<model>"`. So we can route OD's model picker through
-// settings.json: when the user picks a concrete model in Settings, the
-// daemon writes the label into agy's settings.json right before spawn,
-// and the resulting print-mode run uses that model.
+// `agy` v1.0.3 had no `--model` flag (upstream issue #35). As of 1.1.22
+// (verified 2026-08-28) `--model` and a programmatic `agy models`
+// subcommand both exist, but this def still routes model selection
+// through the TUI's settings.json mechanism rather than `--model`
+// directly: the Switch-Model picker writes the choice to settings.json,
+// and every `agy -p` invocation re-reads that file on startup —
+// verified by capturing the `--log-file` line `Propagating selected
+// model override to backend: label="<model>"`. So we can route OD's
+// model picker through settings.json: when the user picks a concrete
+// model in Settings, the daemon writes the label into agy's
+// settings.json right before spawn, and the resulting print-mode run
+// uses that model. Migrating `buildArgs` to pass `--model <slug>`
+// directly (dropping the settings.json write, the lock chain below, and
+// the log-file poll) is a follow-up, not done here.
 //
 // Two ids the picker exposes are special:
 //   - 'default'         : leave settings.json untouched, so agy keeps
@@ -37,10 +43,11 @@ const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 // `availableModels` cache miss + empty print-mode output, which surfaces
 // to the user as a generic "empty response" error.
 //
-// The 8 model labels mirror what `Switch Model` in agy's TUI lists for
-// consumer-tier accounts as of 2026-05-28. The set is small and stable
-// enough to ship statically until upstream adds a programmatic
-// `agy models` subcommand (also tracked under issue #35).
+// These labels mirror `agy models` (confirmed 2026-08-28, agy 1.1.22),
+// in the same order that command lists them. Re-verify against
+// `agy models` when upstream ships new tiers; OD does not yet wire live
+// `listModels` fetching for this def (see `listModels` on other defs,
+// e.g. grok-build.ts, for the pattern to follow).
 const ANTIGRAVITY_SETTINGS_PATH = join(
   homedir(),
   '.gemini',
@@ -180,11 +187,17 @@ export const antigravityAgentDef = {
   },
   fallbackModels: [
     DEFAULT_MODEL_OPTION,
-    { id: 'Gemini 3.1 Pro (High)', label: 'Gemini 3.1 Pro (High)' },
-    { id: 'Gemini 3.1 Pro (Low)', label: 'Gemini 3.1 Pro (Low)' },
+    { id: 'Gemini 3.7 Flash (High)', label: 'Gemini 3.7 Flash (High)' },
+    { id: 'Gemini 3.7 Flash (Medium)', label: 'Gemini 3.7 Flash (Medium)' },
+    { id: 'Gemini 3.7 Flash (Low)', label: 'Gemini 3.7 Flash (Low)' },
+    { id: 'Gemini 3.6 Flash (High)', label: 'Gemini 3.6 Flash (High)' },
+    { id: 'Gemini 3.6 Flash (Medium)', label: 'Gemini 3.6 Flash (Medium)' },
+    { id: 'Gemini 3.6 Flash (Low)', label: 'Gemini 3.6 Flash (Low)' },
     { id: 'Gemini 3.5 Flash (High)', label: 'Gemini 3.5 Flash (High)' },
     { id: 'Gemini 3.5 Flash (Medium)', label: 'Gemini 3.5 Flash (Medium)' },
     { id: 'Gemini 3.5 Flash (Low)', label: 'Gemini 3.5 Flash (Low)' },
+    { id: 'Gemini 3.1 Pro (High)', label: 'Gemini 3.1 Pro (High)' },
+    { id: 'Gemini 3.1 Pro (Low)', label: 'Gemini 3.1 Pro (Low)' },
     {
       id: 'Claude Sonnet 4.6 (Thinking)',
       label: 'Claude Sonnet 4.6 (Thinking)',
