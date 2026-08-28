@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 import { agentCapabilities } from '../capabilities.js';
-import type { RuntimeAgentDef } from '../types.js';
+import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
 
 const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
@@ -44,10 +44,8 @@ const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 // to the user as a generic "empty response" error.
 //
 // These labels mirror `agy models` (confirmed 2026-08-28, agy 1.1.22),
-// in the same order that command lists them. Re-verify against
-// `agy models` when upstream ships new tiers; OD does not yet wire live
-// `listModels` fetching for this def (see `listModels` on other defs,
-// e.g. grok-build.ts, for the pattern to follow).
+// in the same order that command lists them, and double as the offline/
+// failure fallback for the live `listModels` fetch below.
 const ANTIGRAVITY_SETTINGS_PATH = join(
   homedir(),
   '.gemini',
@@ -176,6 +174,25 @@ export async function waitForAgyToReadModel(
   return false;
 }
 
+// `agy models` prints a `Fetching available models...` prose line followed
+// by tab-separated `<slug>\t<display label>` rows (verified 2026-08-28, agy
+// 1.1.22, logged in). Emit `{ id: label, label }` — discarding the slug
+// column — because `mergeFallbackModelMetadata` merges live entries with
+// `fallbackModels` by `id`, and `fallbackModels[].id` is the display label
+// that `buildArgs`/`writeAntigravityModelSelection` expect.
+export function parseAntigravityModels(stdout: string): RuntimeModelOption[] {
+  const seen = new Set<string>();
+  const out: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
+  for (const rawLine of String(stdout || '').split('\n')) {
+    const [slug, ...rest] = rawLine.split('\t');
+    const label = rest.join('\t').trim();
+    if (!slug?.trim() || !label || seen.has(label)) continue;
+    seen.add(label);
+    out.push({ id: label, label });
+  }
+  return out;
+}
+
 export const antigravityAgentDef = {
   id: 'antigravity',
   name: 'Antigravity',
@@ -184,6 +201,11 @@ export const antigravityAgentDef = {
   helpArgs: ['--help'],
   capabilityFlags: {
     [ANTIGRAVITY_SKIP_PERMISSIONS_FLAG]: 'skipPermissions',
+  },
+  listModels: {
+    args: ['models'],
+    timeoutMs: 10_000,
+    parse: parseAntigravityModels,
   },
   fallbackModels: [
     DEFAULT_MODEL_OPTION,
