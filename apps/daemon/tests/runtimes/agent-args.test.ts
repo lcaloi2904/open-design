@@ -716,30 +716,37 @@ test('antigravity passes prompt via -p argument (print mode)', () => {
 
   assert.equal(antigravity.maxPromptArgBytes, undefined);
 
-  // Picker exposes the synthetic Default + the 8 labels agy's TUI
-  // Switch-Model surfaces for consumer-tier accounts. The set is small
-  // enough to ship statically; revisit when upstream adds an `agy
-  // models` subcommand (also tracked under issue #35).
+  // Picker exposes the synthetic Default + the labels `agy models`
+  // reports for consumer-tier accounts (confirmed 2026-08-28, agy
+  // 1.1.22), in that command's own order. Revisit when upstream ships
+  // new tiers.
   assert.deepEqual(
     antigravity.fallbackModels.map((m) => m.id),
     [
       'default',
-      'Gemini 3.1 Pro (High)',
-      'Gemini 3.1 Pro (Low)',
+      'Gemini 3.7 Flash (High)',
+      'Gemini 3.7 Flash (Medium)',
+      'Gemini 3.7 Flash (Low)',
+      'Gemini 3.6 Flash (High)',
+      'Gemini 3.6 Flash (Medium)',
+      'Gemini 3.6 Flash (Low)',
       'Gemini 3.5 Flash (High)',
       'Gemini 3.5 Flash (Medium)',
       'Gemini 3.5 Flash (Low)',
+      'Gemini 3.1 Pro (High)',
+      'Gemini 3.1 Pro (Low)',
       'Claude Sonnet 4.6 (Thinking)',
       'Claude Opus 4.6 (Thinking)',
       'GPT-OSS 120B (Medium)',
     ],
   );
 
-  // `agy` v1.0.3 has no `--model` flag (upstream #35), no `models`
-  // subcommand, and no `/model` slash command — a user-typed model id
-  // would be silently ignored at spawn, looking like an OD bug. The
-  // settings UI hides the "Custom (fill below)" option when this is
-  // `false`. Remove this opt-out once upstream wires #35.
+  // `agy` 1.1.22 now has a `--model` flag and an `agy models` subcommand
+  // (upstream #35 is wired), but `buildArgs` below still selects models
+  // through the settings.json write path, not `--model` directly — see
+  // the comment above `antigravityAgentDef`. The settings UI hides the
+  // "Custom (fill below)" option while this stays `false`; flip it once
+  // `buildArgs` is migrated to pass `--model <slug>`.
   assert.equal(antigravity.supportsCustomModel, false);
 });
 
