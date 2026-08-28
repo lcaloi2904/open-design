@@ -31,6 +31,59 @@ export function configuredAllowedOrigins(env: NodeJS.ProcessEnv = process.env): 
 export function configuredAllowedHosts(origins = configuredAllowedOrigins()): string[] {
   return origins.map((origin) => new URL(origin).host);
 }
+function parseAllowedOrigin(value: string): URL | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function hostnameMatchesAllowedPattern(hostname: string, allowedHostname: string): boolean {
+  const host = hostname.toLowerCase();
+  const allowed = allowedHostname.toLowerCase();
+  if (allowed.startsWith('*.')) {
+    const suffix = allowed.slice(1);
+    return host.endsWith(suffix) && host.length > suffix.length;
+  }
+  return host === allowed;
+}
+
+function allowedOriginMatchesBrowserHost(requestHost: ParsedHostHeader, allowedOrigin: string): boolean {
+  const allowed = parseAllowedOrigin(allowedOrigin);
+  if (!allowed) return false;
+  if (!hostnameMatchesAllowedPattern(requestHost.hostname, allowed.hostname)) return false;
+  if (allowed.hostname.startsWith('*.')) {
+    return allowed.port === '' || requestHost.port === allowed.port;
+  }
+  return requestHost.host === allowed.host;
+}
+
+function allowedOriginMatchesBrowserOrigin(origin: string, allowedOrigin: string): boolean {
+  if (!allowedOrigin.includes('*')) return origin === allowedOrigin;
+
+  const parsedOrigin = parseAllowedOrigin(origin);
+  const allowed = parseAllowedOrigin(allowedOrigin);
+  if (!parsedOrigin || !allowed) return false;
+  if (parsedOrigin.protocol !== allowed.protocol) return false;
+  if (!hostnameMatchesAllowedPattern(parsedOrigin.hostname, allowed.hostname)) return false;
+  if (allowed.hostname.startsWith('*.')) {
+    return allowed.port === '' || parsedOrigin.port === allowed.port;
+  }
+  return parsedOrigin.origin === allowed.origin;
+}
+
+
+function allowedOriginMatchesRequestHost(requestHost: ParsedHostHeader, allowedOrigins: string[]): boolean {
+  return allowedOrigins.some((allowedOrigin) => allowedOriginMatchesBrowserHost(requestHost, allowedOrigin));
+}
+
+function allowedOriginMatchesRequestOrigin(origin: string, allowedOrigins: string[]): boolean {
+  return allowedOrigins.some((allowedOrigin) => allowedOriginMatchesBrowserOrigin(origin, allowedOrigin));
+}
+
 
 // Issue #3225 — operator-declared allowlist of internal hosts that are exempt
 // from the default-deny SSRF guard for USER-CONFIGURED provider endpoints (an
@@ -165,9 +218,9 @@ export function isAllowedBrowserHost(
       ...loopbackHosts.map((h) => `${h}:${p}`),
       `${bindHost}:${p}`,
     ]),
-    ...configuredAllowedHosts(extraAllowedOrigins),
   ]);
   if (explicitHosts.has(requestHost.host)) return true;
+  if (allowedOriginMatchesRequestHost(requestHost, extraAllowedOrigins)) return true;
 
   if (!ports.map(String).includes(requestHost.port)) return false;
   return isLoopbackOrPrivateLanHost(requestHost.hostname);
@@ -180,11 +233,12 @@ export function isAllowedBrowserOrigin(
   bindHost: string,
   extraAllowedOrigins: string[],
 ): boolean {
-  if (extraAllowedOrigins.includes(String(origin))) return true;
+  const originString = String(origin);
+  if (allowedOriginMatchesRequestOrigin(originString, extraAllowedOrigins)) return true;
 
   let parsedOrigin;
   try {
-    parsedOrigin = new URL(String(origin));
+    parsedOrigin = new URL(originString);
   } catch {
     return false;
   }
@@ -201,13 +255,14 @@ export function isAllowedBrowserOrigin(
       ...schemes.map((s) => `${s}://${bindHost}:${p}`),
     ]),
   );
-  if (explicitOrigins.has(String(origin))) return true;
+  if (explicitOrigins.has(originString)) return true;
 
   const originPort = parsedOrigin.port || (parsedOrigin.protocol === 'https:' ? '443' : '80');
   if (!ports.map(String).includes(originPort)) return false;
   if (parsedOrigin.hostname !== requestHost.hostname) return false;
   return isLoopbackOrPrivateLanHost(parsedOrigin.hostname);
 }
+
 
 export function isLocalSameOrigin(
   req: RequestWithOriginHeaders,
