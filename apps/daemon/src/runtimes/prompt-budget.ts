@@ -175,15 +175,18 @@ export function checkWindowsCmdShimCommandLineBudget(
   };
 }
 
-// Heuristic: does `resolvedBin` look like a Windows path? Used by the
-// direct-exe guard so a test on a POSIX host can drive a fake
-// `C:\…\foo.exe` path through the same math the daemon would run on
-// Windows, while still skipping POSIX-shaped paths (which never go
-// through CreateProcess).
-function looksLikeWindowsPath(p: unknown): boolean {
+// `resolveAgentLaunch` normally provides an absolute path, but a relative
+// PATH entry can yield a bare or relative executable name on Windows. Keep
+// the test-host support for explicit Windows paths while recognizing those
+// Windows-only relative forms without treating POSIX absolute paths as
+// CreateProcess command lines.
+function shouldCheckWindowsDirectExe(p: unknown): boolean {
   if (typeof p !== 'string' || p.length === 0) return false;
-  // Drive-letter (`C:\…`, `C:/…`) or UNC (`\\server\share\…`).
-  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\');
+  // Drive-letter (`C:\…`, `C:/…`) or root-relative/UNC (`\…`, `\\…`).
+  if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\')) return true;
+  // A Windows PATH entry can be bare (`agy.exe`) or relative
+  // (`.\\bin\\agy.exe`). POSIX absolute paths must stay a no-op.
+  return process.platform === 'win32' && !p.startsWith('/');
 }
 
 // Companion to `checkWindowsCmdShimCommandLineBudget` for argv-bound
@@ -224,11 +227,9 @@ export function checkWindowsDirectExeCommandLineBudget(
   // The cmd-shim guard owns `.bat` / `.cmd`; skip those here so a single
   // oversized prompt doesn't trip both guards.
   if (/\.(bat|cmd)$/i.test(resolvedBin)) return null;
-  // Only fire for Windows-shaped resolved binaries. On POSIX-shaped
-  // paths, `execvp` accepts each argv entry as a separate buffer —
-  // there's no command-line concatenation step that could expand past a
-  // kernel cap, so we have nothing to guard.
-  if (!looksLikeWindowsPath(resolvedBin)) return null;
+  // A Windows PATH entry can resolve to `agy.exe` or `.\\agy.exe`; do not
+  // require an absolute path or quote-heavy prompts could still reach spawn.
+  if (!shouldCheckWindowsDirectExe(resolvedBin)) return null;
   const argList = Array.isArray(args) ? args : [];
   // `[command, ...args].map(quote).join(' ')` is the exact shape libuv
   // builds before handing it to CreateProcess.
