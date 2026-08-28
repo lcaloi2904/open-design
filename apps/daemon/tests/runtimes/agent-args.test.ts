@@ -1,11 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'vitest';
 import {
   AGENT_DEFS, aider, antigravity, assert, claude, codex, copilot, cursorAgent, deepseek, devin, detectAgents, grokBuild, join, kilo, kimi, kiro, mkdtempSync, opencode, pi, qoder, qwen, rmSync, spawnEnvForAgent, tmpdir, vibe, writeFileSync, chmodSync,
 } from './helpers/test-helpers.js';
 import {
   parseAntigravityModels,
-  writeAntigravityModelSelection,
 } from '../../src/runtimes/defs/antigravity.js';
 import { parseOpenCodeModels } from '../../src/runtimes/defs/opencode.js';
 import { DEFAULT_MODEL_OPTION } from '../../src/runtimes/models.js';
@@ -651,11 +649,9 @@ test('qwen args check promptViaStdin, base args, model args and exclude `-` sent
   assert.equal(withModel.includes('-'), false);
 });
 
-// `agy` exposes `-p` (print mode, alias for `--print`) plus `-` as
-// the stdin sentinel — confirmed against `agy --help` on v1.0.3, where
-// `Available subcommands` is `changelog / help / install / plugin /
-// update` (no `chat`). Current agy treats `agy -p -` as a literal
-// prompt of "-" (stdin is ignored) — see #7161. OD therefore passes
+// `agy` exposes `-p` (print mode, alias for `--print`) and treats the
+// following value as the prompt. Current agy treats `agy -p -` as a
+// literal prompt (stdin is ignored) — see #7161. OD therefore passes
 // the real prompt as the `-p` argument.
 test('antigravity passes prompt via -p argument (print mode)', () => {
   assert.equal(antigravity.bin, 'agy');
@@ -675,28 +671,35 @@ test('antigravity passes prompt via -p argument (print mode)', () => {
     'write hello world',
   ]);
 
-  // No `--model` flag exists upstream, so buildArgs argv must stay the
-  // same regardless of which label the user picks.
-  // Pass a temp antigravitySettingsPath so buildArgs does not touch the
-  // real ~/.gemini/antigravity-cli/settings.json during a unit test run.
-  const settingsDir = mkdtempSync(join(tmpdir(), 'od-agy-argv-'));
-  try {
-    const withModel = antigravity.buildArgs('hi', [], [], {
-      model: 'Gemini 3.1 Pro (High)',
-    }, {
-      agentLogFilePath: '/tmp/od-agy-test.log',
-      antigravitySettingsPath: join(settingsDir, 'settings.json'),
-    });
-    assert.equal(withModel.includes('--model'), false);
-    assert.deepEqual(withModel, [
-      '--log-file',
-      '/tmp/od-agy-test.log',
-      '-p',
-      'hi',
-    ]);
-  } finally {
-    rmSync(settingsDir, { recursive: true, force: true });
-  }
+  // `--model <label>` is pushed in argv alongside the other pre-`-p`
+  // flags, after `--log-file`, for any non-default selection.
+  const withModel = antigravity.buildArgs('hi', [], [], {
+    model: 'Gemini 3.1 Pro (High)',
+  }, {
+    agentLogFilePath: '/tmp/od-agy-test.log',
+  });
+  assert.deepEqual(withModel, [
+    '--log-file',
+    '/tmp/od-agy-test.log',
+    '--model',
+    'Gemini 3.1 Pro (High)',
+    '-p',
+    'hi',
+  ]);
+
+  // 'default' must NOT push `--model` — agy keeps whatever it last had
+  // selected in its own TUI.
+  const withDefaultModel = antigravity.buildArgs('hi', [], [], {
+    model: 'default',
+  }, {
+    agentLogFilePath: '/tmp/od-agy-test.log',
+  });
+  assert.deepEqual(withDefaultModel, [
+    '--log-file',
+    '/tmp/od-agy-test.log',
+    '-p',
+    'hi',
+  ]);
 
   // Argv must NOT carry `-c` even on follow-up turns. We tested resume
   // mode and found agy's `-c` activates an internal agentic loop (tool
@@ -745,12 +748,11 @@ test('antigravity passes prompt via -p argument (print mode)', () => {
     ],
   );
 
-  // `agy` 1.1.22 now has a `--model` flag and an `agy models` subcommand
-  // (upstream #35 is wired), but `buildArgs` below still selects models
-  // through the settings.json write path, not `--model` directly — see
-  // the comment above `antigravityAgentDef`. The settings UI hides the
-  // "Custom (fill below)" option while this stays `false`; flip it once
-  // `buildArgs` is migrated to pass `--model <slug>`.
+  // `supportsCustomModel` stays `false` even though `buildArgs` now
+  // passes `--model` directly: the label set is a server-side enum, and
+  // empirically a free-text id agy doesn't recognise still mistargets
+  // (silent `availableModels` cache miss + empty print-mode output). The
+  // settings UI keeps hiding the "Custom (fill below)" option.
   assert.equal(antigravity.supportsCustomModel, false);
 });
 
@@ -805,66 +807,6 @@ test('antigravity places permission bypass after log args', () => {
     );
   } finally {
     agentCapabilities.delete('antigravity');
-  }
-});
-
-// `agy` reads `~/.gemini/antigravity-cli/settings.json` on every CLI
-// startup — verified by capturing the `--log-file` line `Propagating
-// selected model override to backend: label=…`. Routing OD's model
-// picker through that file lets the user choose a model from Settings
-// even though agy has no `--model` flag (upstream issue #35).
-//
-// Two behaviors must hold and are pinned here:
-//
-//   1. Picking "default" must NOT touch settings.json — respect the
-//      label the user previously set inside agy's own TUI.
-//   2. Picking a concrete label must write that exact string into the
-//      `model` field while preserving every other key (e.g.
-//      `trustedWorkspaces` that agy populates on first-run consent).
-test('antigravity persists model selection to agy settings.json', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'od-antigravity-settings-'));
-  try {
-    const settingsPath = join(dir, 'settings.json');
-
-    // 1. Pre-seed the file as agy would after onboarding: a model label
-    //    plus a trustedWorkspaces array the user has already consented to.
-    writeFileSync(
-      settingsPath,
-      JSON.stringify(
-        {
-          model: 'GPT-OSS 120B (Medium)',
-          trustedWorkspaces: ['/tmp/od-project'],
-        },
-        null,
-        2,
-      ),
-    );
-
-    // 2. Write a new label and assert the model swap + trusted list intact.
-    writeAntigravityModelSelection('Gemini 3.1 Pro (High)', settingsPath);
-    const after = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    assert.equal(after.model, 'Gemini 3.1 Pro (High)');
-    assert.deepEqual(after.trustedWorkspaces, ['/tmp/od-project']);
-
-    // 3. When the file doesn't exist (fresh install before onboarding),
-    //    we must create it rather than crash the spawn pipeline.
-    const freshPath = join(dir, 'fresh', 'settings.json');
-    writeAntigravityModelSelection('Claude Sonnet 4.6 (Thinking)', freshPath);
-    assert.ok(existsSync(freshPath));
-    assert.equal(
-      JSON.parse(readFileSync(freshPath, 'utf8')).model,
-      'Claude Sonnet 4.6 (Thinking)',
-    );
-
-    // 4. When the existing file is corrupt JSON, we must rewrite it from
-    //    scratch instead of leaving agy with an unparseable settings file.
-    const corruptPath = join(dir, 'corrupt-settings.json');
-    writeFileSync(corruptPath, '{not valid json');
-    writeAntigravityModelSelection('Gemini 3.5 Flash (Low)', corruptPath);
-    const recovered = JSON.parse(readFileSync(corruptPath, 'utf8'));
-    assert.equal(recovered.model, 'Gemini 3.5 Flash (Low)');
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 });
 
