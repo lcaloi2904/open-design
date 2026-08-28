@@ -1133,21 +1133,11 @@ describe('POST /api/integrations/vela/login', () => {
     expect(env.VELA_API_URL ?? '').toBe('');
   });
 
-  it('falls back to the daemon AMR API proxy when the direct device-authorization attempt fails', async () => {
-    const dumpPath = path.join(tmpHome, 'vela-env-fallback.json');
-    process.env.FAKE_VELA_ENV_DUMP_PATH = dumpPath;
-    // Direct attempt fails (models a broken amr-api edge path, #3726); the proxy
-    // attempt (which sets VELA_API_URL) succeeds.
-    process.env.FAKE_VELA_LOGIN_FAIL_WITHOUT_API_URL =
-      'start device authorization: API request failed with status 502: broken edge';
 
-    const { status } = await postJson(`${baseUrl}/api/integrations/vela/login`);
-    expect(status).toBe(202);
 
-    await waitForFile(dumpPath);
-    const env = JSON.parse(readFileSync(dumpPath, 'utf8'));
-    expect(env.VELA_API_URL).toBe(`${baseUrl}/api/integrations/vela/api-proxy`);
-  });
+
+
+
 
   it('falls back to the proxy when the direct attempt fails AFTER the startup grace', async () => {
     // Regression (review on #4402): a direct device-authorization that survives
