@@ -1983,6 +1983,14 @@ function AppInner() {
       );
     if (!cloudIdentityRejected) return;
     if (route.kind === 'home' && route.view === 'onboarding') return;
+    // TEMP DIAG (issue: forced re-sign-in on relaunch): whichever of these two
+    // is true is why the onboarding/sign-in screen is about to show.
+    console.warn('[amr-diag] cloudIdentityRejected -> forcing onboarding', {
+      workspaceContextFailure: workspaceContextState.failure,
+      amrLoggedIn: amrLoginStatus?.loggedIn,
+      amrSessionState: amrLoginStatus?.sessionState,
+      usesOpenDesignCloud,
+    });
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
   }, [
     amrLoginStatus,
