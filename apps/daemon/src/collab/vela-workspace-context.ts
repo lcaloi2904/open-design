@@ -879,13 +879,6 @@ export async function fetchVelaWorkspaceDirectory(
     });
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        // TEMP DIAG (issue: forced re-sign-in on relaunch): this is the live
-        // GET /api/v1/workspaces call, one of the two paths that can force the
-        // client into the sign-in screen (see App.tsx cloudIdentityRejected).
-        console.warn('[amr-diag] fetchVelaWorkspaceDirectory -> unauthorized', {
-          status: response.status,
-          apiUrl: session.apiUrl,
-        });
         if (!options.readSession) {
           markVelaAuthorizationExpired(process.env, configuredEnv);
         }

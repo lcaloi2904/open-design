@@ -468,22 +468,8 @@ export function readVelaLoginStatus(
   let sessionState: AmrSessionState = 'authenticated';
   if (!rawStatus.loggedIn) {
     sessionState = 'signed_out';
-    // TEMP DIAG (issue: forced re-sign-in on relaunch): capture why the
-    // config-file read came back with no runtime key at this exact instant.
-    console.warn('[amr-diag] readVelaLoginStatus -> signed_out', {
-      configPath: amrConfigPath(),
-      configExists: existsSync(amrConfigPath()),
-      configMtimeMs: existsSync(amrConfigPath()) ? statSync(amrConfigPath()).mtimeMs : null,
-    });
   } else if (expiredVelaCredentialRevisions.has(credentialRevision)) {
     sessionState = 'reauth_required';
-    // TEMP DIAG (issue: forced re-sign-in on relaunch): this is the in-memory
-    // expiry flag path — it can only be set by markVelaAuthorizationExpired,
-    // which also logs its caller below.
-    console.warn('[amr-diag] readVelaLoginStatus -> reauth_required', {
-      credentialRevision,
-      expiredRevisionsCount: expiredVelaCredentialRevisions.size,
-    });
   }
   return {
     ...rawStatus,
@@ -737,14 +723,6 @@ export function markVelaAuthorizationExpired(
   expiredVelaCredentialRevisions.add(revision);
   const control = readRawVelaControlApiContext(env, configuredEnv);
   if (control) expiredVelaControlKeys.add(velaControlKeyDigest(control.controlKey));
-  // TEMP DIAG (issue: forced re-sign-in on relaunch): every caller of this
-  // function is a genuine 401/403 from a live AMR endpoint. The stack pinpoints
-  // which one (vela.ts live-account probe, vela-wallet.ts balance read, or
-  // vela-workspace-context.ts directory fetch) fired it and when.
-  console.warn('[amr-diag] markVelaAuthorizationExpired called', {
-    revision,
-    caller: new Error('trace').stack,
-  });
   return revision;
 }
 

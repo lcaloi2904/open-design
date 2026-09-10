@@ -856,15 +856,6 @@ export function useWorkspaceContext(): WorkspaceContextState {
       const status = (error as { status?: unknown })?.status;
       const unsupported = status === 404;
       const reauthRequired = status === 401 || status === 403;
-      if (reauthRequired) {
-        // TEMP DIAG (issue: forced re-sign-in on relaunch): this is the client
-        // side of the second sign-in trigger (App.tsx cloudIdentityRejected via
-        // workspaceContextState.failure === 'reauth-required').
-        console.warn('[amr-diag] useWorkspaceContext -> reauth-required', {
-          status,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
       setState({
         context: cachedWorkspaceContext,
         resourceReadIdentity:
