@@ -12328,6 +12328,7 @@ export async function startServer({
             currentPromptForTransport,
           );
         };
+        const isOdNextRequestStage = strategyTaskAtStart?.inputStage === 'request';
         const transportProfiles = isOdNextRequestStage ? [true] : [false, true];
         for (const compactForAntigravityArgv of transportProfiles) {
           const compactedPrior = compactPriorTranscriptForAgentTransport({
